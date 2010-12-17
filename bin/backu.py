@@ -1,12 +1,16 @@
 #!/usr/bin/env python -t
 ''' backu.py or backupy
 
-local back ups, with configuration sprinkled via .__backupy__ files on the
+local back ups, with configuration sprinkled via backupy dotfiles on the
 filesystem.
 
-the main idea is to utilize the nearest context to decide what to do.  you can
-always be explicit with what to do by creating a .__backupy__ configuration
-file (json format) at the direction you want to control.
+the main idea is to leverage tar as much as possible by utilizing the nearest
+context to decide what to do.  mainly, this is achieved via the use of
+.__backupy_[content]__ files that you sprinke around.
+
+the only thing you really need to get started is a .__backupy_root__ (json
+format) file with any config overrides.  then, just point this script at that
+directory and have at it!
 
 i use gnu versions of the various commands where appropriate.
 
@@ -14,70 +18,169 @@ requirements:
    python (2.6 tested)
    argparse
 
-cvs isn't supported b/c i'm too lazy and don't use cvs anymore
+cvs isn't supported b/c i'm too lazy and you shouldn't use cvs anymore.
 '''
 
-import argparse
-import os, sys, json
-from copy import deepcopy
-
+import os, sys, json, re
 import logging as log
-from pprint import pprint
+from argparse import ArgumentParser
+from glob import glob, iglob
+from pprint import pformat
 
+from future_builtins import map
 
-valid_content = set('backupy exclude src hg git bzr svn svn/repo'.split())
+bpy_filename = '.__backupy_%s__'
+bpy_re = re.compile(r'.__backupy_(?P<content>[^_]+)__')
+vcs_content = 'bzr git hg svn'.split()
+valid_content = 'root exclude src svnrepo flat auto'.split() + vcs_content
+
+compressed_ftypes = '7z 7zip rar tbz tbz2 tbzip2 tar.bz tar.bz2 tar.bzip2 tgz tar.gz txz tar.xz tz zip z'.split()
+
+def bpy(path='', content=''):
+   ''' helper to get backupy filenames '''
+   if content:
+      bpy = bpy_filename % content
+      return os.path.join(path, bpy) if path else bpy
+   elif path:
+      # there can be only one
+      found = glob(os.path.join(path, bpy_filename % '*'))
+      assert len(found) < 2, 'mutliple backupy files found:\n\t%s' % found
+      if found: return found[0]
+   else:
+      raise SyntaxError('bpy called without a path or content')
 
 default_cfg = {
-      # specify the type of content found in this directory
-      'content': None,
-      # excludes are relative to the stack and may include wildcards
-      'exclude': '*.a *.o *.py[co] *.sw[nop] *~ .#* [#]*#'.split(),
+      # excludes are relative to the stack
+      'exclude': '*.a *.o *.lo *.py[co] *.class *.sw[nop] *~ .#* [#]*#'.split(),
       # number of backups to keep around
       'numbak': 4,
       # file format of the backup
       'ftype': 'tgz',
       # name of backup files
       'bakname': '%(path)s-%(timestamp)s.%(ftype)',
-      # followlinks during walk?
-      'followlinks': False,
+      # default tar args
+      'tarargs': '--preserve --same-owner --auto-compress --exclude-tag=%s' % bpy(content='exclude')
 }
 
-def bpy(path): return '%s/.__backupy__' % path
+def load_bpy(path, cfgs):
+   ''' loads the backupy configuration '''
+   b = bpy(path)
+   if not b: return
 
-def load_bpy(state, path):
-   if not os.path.exists(bpy(path)): return
-   log.debug('found bpy: %s' % bpy(path))
-   cfg = {} if state else default_cfg
+   content = bpy_re.search(b).group('content')
+   if content not in valid_content:
+      log.warn('skipping unrecognized bpy:\n\t%s' % b)
+      return
+
+   cfg = {} if cfgs else default_cfg
    try:
-      with file(bpy(path)) as f:
-         cfg.update(json.load(f))
+      if os.path.getsize(b):
+         with file(b) as f:
+            cfg.update(json.load(f))
    except:
-      log.fatal('unable to successfully read in %s', bpy(path))
+      log.fatal('unable to successfully read:\n\t%s', b)
       raise
    cfg['__path__'] = path
-   state.append(cfg)
+   cfg['__content__'] = content
+   cfgs.append(cfg)
+   log.debug('processed bpy:\n\t%s' % b)
+   return (content, cfg)
 
-ap = argparse.ArgumentParser()
-ap.add_argument('path', help='directory path to backup')
+def backup_bzr(path, dirs, files):
+   # statused and unkonw files, honor excludes
+   print 'bzr', path
+   dirs[:] = []
+
+def backup_git(path, dirs, files):
+   # statused and unkonw files, honor excludes
+   print 'git', path
+   dirs[:] = []
+
+def backup_hg(path, dirs, files):
+   # statused and unknown files, honor excludes
+   print 'hg', path
+   dirs[:] = []
+
+def backup_svn(path, dirs, files):
+   # statused and unknown files, honor excludes
+   print 'svn', path
+   dirs[:] = []
+
+def backup_svnrepo(path, dirs, files):
+   # svnadmin dump
+   print 'svnrepo', path
+   dirs[:] = []
+
+def backup_src(path, dirs, files):
+   # don't archive the tarballs of the same prefix!, honor excludes
+   print 'src', path
+
+def backup_flat(path, dirs, files):
+   # everything but excludes
+   print 'flat', path
+
+def find_svnrepo(path, dirs, files):
+   # find a db directory and a readme.txt saying that it is so
+   lfiles = set(map(str.lower, files))
+   if 'readme.txt' not in lfiles and 'db' not in set(map(str.lower, dirs)):
+      return
+
+   for i, f in enumerate(lfiles):
+      if f == 'readme.txt':
+         with open(os.path.join(path, files[i])) as readme:
+            read = readme.read().lower()
+         if 'is a subversion repository' in read: return 'svnrepo'
+
+def find_vcs(path, dirs, files):
+   # find vcs subdirectories
+   vcs = set('.%s' % x for x in vcs_content) & set(map(str.lower, dirs))
+   if len(vcs) == 1:
+      return vcs.pop().lstrip('.')
+   elif len(vcs) > 1:
+      log.error('confusing to have many vcs in the same directory, please use an explicit backpuy dotfile to indicate the one to utilize for backup.  treating this directory as "flat" (archiving all files): %s' % path)
+
+
+ap = ArgumentParser()
+ap.add_argument('root', help='directory to backup')
 ap.add_argument('backpath', help='backup directory')
-ap.add_argument('-l', '--loglevel', help='logging output log level', choices='error warning info debug'.split(), default='warn')
+ap.add_argument('-l', '--loglevel', help='logging output log level', choices='error warning info debug'.split(), default='info')
+ap.add_argument('-f', '--forceroot', help='not implemented', action='store_true')
 args = ap.parse_args()
 
-# verify that the path is backupy configured
-path = os.path.realpath(args.path)
-if not (os.path.isdir(path) and os.path.exists(bpy(path))):
-   ap.error('%s is not backupy enabled (%s is missing)' % (path, bpy(path)))
+# verify that the root is a backupy root
+rootpath = os.path.realpath(args.root)
+if not (os.path.isdir(rootpath) and os.path.exists(bpy(rootpath, 'root'))):
+   ap.error('%s is not backupy enabled (%s is missing)' % (rootpath, bpy(rootpath, 'root')))
 
-log.basicConfig(level=getattr(log, args.loglevel.upper()), format='%(asctime)s %(levelname)-8s %(message)s')
+log.basicConfig(level=getattr(log, args.loglevel.upper()),
+                format='%(asctime)s %(levelname)-8s %(message)s',)
 
-# store our config in a state stack
-state = list()
+# state
+cfgs = list()     # .__backupy__ files
+excludes = list() # tar exclude list
 
-# survey configuration
-for root, dirs, files in os.walk(path, onerror=''):
-   load_bpy(state, root)
+# walk!
+for path, dirs, files in os.walk(rootpath):
+   content, cfg = load_bpy(path, cfgs) or ('auto', None)
 
-pprint( state )
+   if content == 'exclude':
+      dirs[:] = []
+      continue
+
+   if content == 'auto' or content == 'root':
+      # try to be automagic, chained to reflect priority
+      content = find_vcs(path, dirs, files) or \
+                find_svnrepo(path, dirs, files) or \
+                'flat'
+
+   fname = 'backup_%s' % content
+   if fname in globals():
+      globals()[fname](path, dirs, files)
+   else:
+      log.error('content "%s" is not implemented yet, sorry' % content)
+
+
+log.debug('ran using the following bpys:\n%s' % pformat(cfgs))
 
 # verify that the backpath is not part of the path (can be excluded)
 backpath = os.path.realpath(args.backpath)
