@@ -86,13 +86,27 @@ def load_bpy(path, cfgs):
    log.debug('processed bpy:\n\t%s' % b)
    return (content, cfg)
 
+
+# repositories inside other repositories, but nesting in general
+
 def backup_bzr(path, dirs, files):
-   # statused and unkonw files, honor excludes
+   # only if it's a lightweight checkout, statused, unknown and ignored files
+   # look at bzrignore files to backup
+   # honor excludes
+
+   # no working tree: bare repository
+   # test for being a shared repository
+   # it's not a "repo" if bzr info indicates it has checkout or pull/pushes
    print 'bzr', path
    dirs[:] = []
 
 def backup_git(path, dirs, files):
-   # statused and unkonw files, honor excludes
+   # git remote
+   # git branch
+   # git config -l
+   # statused and unknown files, honor excludes
+
+   # no working tree: bare repository
    print 'git', path
    dirs[:] = []
 
@@ -102,12 +116,14 @@ def backup_hg(path, dirs, files):
    dirs[:] = []
 
 def backup_svn(path, dirs, files):
-   # statused and unknown files, honor excludes
+   # statused, ignored and unknown files, honor excludes
    print 'svn', path
    dirs[:] = []
 
 def backup_svnrepo(path, dirs, files):
-   # svnadmin dump
+   # svnadmin dump to a dumpfile
+   # exclude everything but that dumpfile
+   # delete dumpfile
    print 'svnrepo', path
    dirs[:] = []
 
@@ -117,19 +133,18 @@ def backup_src(path, dirs, files):
 
 def backup_flat(path, dirs, files):
    # everything but excludes
+   pass
    print 'flat', path
 
 def find_svnrepo(path, dirs, files):
    # find a db directory and a readme.txt saying that it is so
    lfiles = set(map(str.lower, files))
-   if 'readme.txt' not in lfiles and 'db' not in set(map(str.lower, dirs)):
+   if 'readme.txt' not in lfiles or 'db' not in set(map(str.lower, dirs)):
       return
 
-   for i, f in enumerate(lfiles):
-      if f == 'readme.txt':
-         with open(os.path.join(path, files[i])) as readme:
-            read = readme.read().lower()
-         if 'is a subversion repository' in read: return 'svnrepo'
+   with open(os.path.join(path, 'readme.txt')) as readme:
+      read = readme.read().lower()
+      if 'is a subversion repository' in read: return 'svnrepo'
 
 def find_vcs(path, dirs, files):
    # find vcs subdirectories
